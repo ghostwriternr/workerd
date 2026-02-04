@@ -15,7 +15,8 @@ jsg::Ref<Fetcher> LoopbackServiceStub::call(jsg::Lock& js, Options options) {
   }
 
   IoContext& ioctx = IoContext::current();
-  auto channelObj = ioctx.getIoChannelFactory().getSubrequestChannel(channel, kj::mv(props));
+  auto channelObj = ioctx.getIoChannelFactory().getSubrequestChannel(
+      channel, kj::mv(props), kj::mv(options.cohort));
   return js.alloc<Fetcher>(ioctx.addObject(kj::mv(channelObj)));
 }
 

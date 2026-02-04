@@ -3277,7 +3277,7 @@ class Server::WorkerService final: public Service,
   }
 
   kj::Own<SubrequestChannel> getSubrequestChannel(
-      uint channel, kj::Maybe<Frankenvalue> props) override {
+      uint channel, kj::Maybe<Frankenvalue> props, kj::Maybe<kj::String> cohort) override {
     auto& channels =
         KJ_REQUIRE_NONNULL(ioChannels.tryGet<LinkedIoChannels>(), "link() has not been called");
 
