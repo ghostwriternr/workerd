@@ -937,6 +937,17 @@ kj::Promise<void> ContainerClient::setEgressHttp(SetEgressHttpContext context) {
   auto subrequestChannel = channelTokenHandler.decodeSubrequestChannelToken(
       workerd::IoChannelFactory::ChannelTokenUsage::RPC, tokenBytes);
 
+  // Replace existing mapping if one with the same CIDR and port already exists,
+  // otherwise add a new one. This allows callers like interceptAllOutboundHttp()
+  // to update the handler for an address range that was previously registered.
+  auto cidrStr = cidr.toString();
+  for (auto& mapping : egressMappings) {
+    if (mapping.cidr.toString() == cidrStr && mapping.port == port) {
+      mapping.channel = kj::mv(subrequestChannel);
+      co_return;
+    }
+  }
+
   egressMappings.add(EgressMapping{
     .cidr = kj::mv(cidr),
     .port = port,

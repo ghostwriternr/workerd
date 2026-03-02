@@ -415,6 +415,102 @@ export class DurableObjectExample extends DurableObject {
     }
   }
 
+  async testEgressMappingReplacement() {
+    const container = this.ctx.container;
+
+    if (container.running) {
+      await this.ctx.container.destroy();
+      await this.ctx.container.monitor().catch(() => {});
+    }
+
+    container.start();
+    container.monitor().catch((err) => {
+      console.error('Container exited with an error:', err.message);
+    });
+
+    await this.waitUntilContainerIsHealthy();
+
+    // Register a catch-all handler with binding id 100
+    await container.interceptAllOutboundHttp(
+      this.ctx.exports.TestService({ props: { id: 100 } })
+    );
+
+    // Verify it works
+    {
+      const response = await container
+        .getTcpPort(8080)
+        .fetch('http://foo/intercept', {
+          headers: { 'x-host': '8.8.8.8:80' },
+          abort: AbortSignal.timeout(DEFAULT_TIMEOUT_DURATION),
+        });
+      assert.equal(response.status, 200);
+      assert.equal(await response.text(), 'hello binding: 100 http://8.8.8.8/');
+    }
+
+    // Replace the catch-all handler with a new binding id 200
+    await container.interceptAllOutboundHttp(
+      this.ctx.exports.TestService({ props: { id: 200 } })
+    );
+
+    // Verify the replacement took effect
+    {
+      const response = await container
+        .getTcpPort(8080)
+        .fetch('http://foo/intercept', {
+          headers: { 'x-host': '8.8.8.8:80' },
+          abort: AbortSignal.timeout(DEFAULT_TIMEOUT_DURATION),
+        });
+      assert.equal(response.status, 200);
+      assert.equal(
+        await response.text(),
+        'hello binding: 200 http://8.8.8.8/'
+      );
+    }
+
+    // Also verify that specific-host replacement works:
+    // Register a specific host mapping, then replace it
+    await container.interceptOutboundHttp(
+      '10.0.0.1:9999',
+      this.ctx.exports.TestService({ props: { id: 300 } })
+    );
+
+    {
+      const response = await container
+        .getTcpPort(8080)
+        .fetch('http://foo/intercept', {
+          headers: { 'x-host': '10.0.0.1:9999' },
+          abort: AbortSignal.timeout(DEFAULT_TIMEOUT_DURATION),
+        });
+      assert.equal(response.status, 200);
+      assert.equal(
+        await response.text(),
+        'hello binding: 300 http://10.0.0.1:9999/'
+      );
+    }
+
+    // Replace the specific host mapping with a new binding
+    await container.interceptOutboundHttp(
+      '10.0.0.1:9999',
+      this.ctx.exports.TestService({ props: { id: 400 } })
+    );
+
+    {
+      const response = await container
+        .getTcpPort(8080)
+        .fetch('http://foo/intercept', {
+          headers: { 'x-host': '10.0.0.1:9999' },
+          abort: AbortSignal.timeout(DEFAULT_TIMEOUT_DURATION),
+        });
+      assert.equal(response.status, 200);
+      assert.equal(
+        await response.text(),
+        'hello binding: 400 http://10.0.0.1:9999/'
+      );
+    }
+
+    await container.destroy();
+  }
+
   async testInterceptWebSocket() {
     const container = this.ctx.container;
     if (container.running) {
@@ -718,5 +814,15 @@ export const testInterceptWebSocket = {
     const id = env.MY_CONTAINER.idFromName('testInterceptWebSocket');
     const stub = env.MY_CONTAINER.get(id);
     await stub.testInterceptWebSocket();
+  },
+};
+
+// Test that calling interceptAllOutboundHttp or interceptOutboundHttp a second
+// time with the same address replaces the previous handler instead of being ignored
+export const testEgressMappingReplacement = {
+  async test(_ctrl, env) {
+    const id = env.MY_CONTAINER.idFromName('testEgressMappingReplacement');
+    const stub = env.MY_CONTAINER.get(id);
+    await stub.testEgressMappingReplacement();
   },
 };
