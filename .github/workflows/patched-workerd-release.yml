@@ -50,10 +50,10 @@ jobs:
             runner: ubuntu-22.04
             bazel_config: release_linux
           - asset: darwin-arm64
-            runner: macos-15-xlarge
+            runner: macos-15
             bazel_config: release_macos
           - asset: darwin-64
-            runner: macos-15-xlarge
+            runner: macos-15
             bazel_config: release_macos_cross_x86_64
 
     steps:
