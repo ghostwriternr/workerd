@@ -13,6 +13,8 @@
 
 #include "container-client.h"
 
+#include <stdlib.h>
+
 #include <kj/test.h>
 
 namespace workerd::server {
@@ -301,6 +303,79 @@ KJ_TEST("ContainerCreateRequest omits empty container privileges") {
   KJ_EXPECT(decodedHostConfig.getCapAdd().size() == 0);
   KJ_EXPECT(decodedHostConfig.getDevices().size() == 0);
   KJ_EXPECT(decodedHostConfig.getSecurityOpt().size() == 0);
+}
+
+KJ_TEST("local Docker FUSE privileges are omitted by default") {
+  unsetenv("WORKERD_LOCAL_DOCKER_ENABLE_FUSE");
+
+  auto privileges = applyLocalDockerFuseForLocalDev(ContainerPrivileges{});
+
+  KJ_EXPECT(privileges.isEmpty());
+}
+
+KJ_TEST("local Docker FUSE privileges are applied when explicitly enabled") {
+  setenv("WORKERD_LOCAL_DOCKER_ENABLE_FUSE", "1", true);
+  KJ_DEFER(unsetenv("WORKERD_LOCAL_DOCKER_ENABLE_FUSE"));
+
+  auto privileges = applyLocalDockerFuseForLocalDev(ContainerPrivileges{});
+
+  KJ_REQUIRE(privileges.capabilities.size() == 1);
+  KJ_EXPECT(privileges.capabilities[0] == "SYS_ADMIN");
+
+  KJ_REQUIRE(privileges.devices.size() == 1);
+  KJ_EXPECT(privileges.devices[0].pathOnHost == "/dev/fuse");
+  KJ_EXPECT(privileges.devices[0].pathInContainer == "/dev/fuse");
+  KJ_EXPECT(privileges.devices[0].cgroupPermissions == "rwm");
+
+  KJ_REQUIRE(privileges.securityOpt.size() == 1);
+  KJ_EXPECT(privileges.securityOpt[0] == "apparmor:unconfined");
+}
+
+KJ_TEST("local Docker FUSE privileges merge with configured privileges") {
+  setenv("WORKERD_LOCAL_DOCKER_ENABLE_FUSE", "1", true);
+  KJ_DEFER(unsetenv("WORKERD_LOCAL_DOCKER_ENABLE_FUSE"));
+
+  auto privileges = applyLocalDockerFuseForLocalDev(ContainerPrivileges{
+    .capabilities = kj::arr(kj::str("NET_ADMIN")),
+    .devices = kj::arr(ContainerPrivileges::Device{
+      .pathOnHost = kj::str("/dev/net/tun"),
+      .pathInContainer = kj::str("/dev/net/tun"),
+      .cgroupPermissions = kj::str("rw"),
+    }),
+    .securityOpt = kj::arr(kj::str("no-new-privileges")),
+  });
+
+  KJ_REQUIRE(privileges.capabilities.size() == 2);
+  KJ_EXPECT(privileges.capabilities[0] == "NET_ADMIN");
+  KJ_EXPECT(privileges.capabilities[1] == "SYS_ADMIN");
+
+  KJ_REQUIRE(privileges.devices.size() == 2);
+  KJ_EXPECT(privileges.devices[0].pathOnHost == "/dev/net/tun");
+  KJ_EXPECT(privileges.devices[1].pathOnHost == "/dev/fuse");
+
+  KJ_REQUIRE(privileges.securityOpt.size() == 2);
+  KJ_EXPECT(privileges.securityOpt[0] == "no-new-privileges");
+  KJ_EXPECT(privileges.securityOpt[1] == "apparmor:unconfined");
+}
+
+KJ_TEST("local Docker FUSE privileges are not duplicated when already configured") {
+  setenv("WORKERD_LOCAL_DOCKER_ENABLE_FUSE", "1", true);
+  KJ_DEFER(unsetenv("WORKERD_LOCAL_DOCKER_ENABLE_FUSE"));
+
+  auto privileges = applyLocalDockerFuseForLocalDev(ContainerPrivileges{
+    .capabilities = kj::arr(kj::str("SYS_ADMIN")),
+    .devices = kj::arr(ContainerPrivileges::Device{
+      .pathOnHost = kj::str("/dev/fuse"),
+      .pathInContainer = kj::str("/dev/fuse"),
+      .cgroupPermissions = kj::str("rw"),
+    }),
+    .securityOpt = kj::arr(kj::str("apparmor:unconfined")),
+  });
+
+  KJ_EXPECT(privileges.capabilities.size() == 1);
+  KJ_REQUIRE(privileges.devices.size() == 1);
+  KJ_EXPECT(privileges.devices[0].cgroupPermissions == "rw");
+  KJ_EXPECT(privileges.securityOpt.size() == 1);
 }
 
 }  // namespace

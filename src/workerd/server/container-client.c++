@@ -18,6 +18,7 @@
 #include <workerd/util/uuid.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <capnp/compat/json.h>
 #include <capnp/message.h>
@@ -74,6 +75,16 @@ constexpr size_t MAX_TAR_CONTENT_SIZE = 8ull * 1024 * 1024 * 1024;
 
 // Ensures the stale-volume check runs at most once per process.
 std::atomic_bool staleSnapshotVolumeCheckScheduled = false;
+
+constexpr kj::StringPtr LOCAL_DOCKER_FUSE_ENV = "WORKERD_LOCAL_DOCKER_ENABLE_FUSE"_kj;
+constexpr kj::StringPtr FUSE_DEVICE_PATH = "/dev/fuse"_kj;
+constexpr kj::StringPtr FUSE_CAPABILITY = "SYS_ADMIN"_kj;
+constexpr kj::StringPtr FUSE_SECURITY_OPT = "apparmor:unconfined"_kj;
+
+bool isLocalDockerFuseEnabled() {
+  auto value = getenv(LOCAL_DOCKER_FUSE_ENV.cStr());
+  return value != nullptr && kj::StringPtr(value) == "1";
+}
 
 struct ParsedAddress {
   kj::OneOf<kj::CidrRange, kj::String> destination;
@@ -983,6 +994,61 @@ void configureContainerPrivileges(
   }
 }
 
+ContainerPrivileges applyLocalDockerFuseForLocalDev(ContainerPrivileges privileges) {
+  if (!isLocalDockerFuseEnabled()) {
+    return kj::mv(privileges);
+  }
+
+  // Merge rather than replace: the config-driven privileges from workerd.capnp are authoritative,
+  // and configureContainerPrivileges() is the sole writer of CapAdd/Devices/SecurityOpt, so the
+  // FUSE entries have to be part of the same lists.
+  auto hasDevice = [&](kj::StringPtr pathOnHost) {
+    for (const auto& device: privileges.devices) {
+      if (device.pathOnHost == pathOnHost) return true;
+    }
+    return false;
+  };
+  auto contains = [](const kj::Array<kj::String>& values, kj::StringPtr needle) {
+    for (const auto& value: values) {
+      if (value == needle) return true;
+    }
+    return false;
+  };
+
+  if (!hasDevice(FUSE_DEVICE_PATH)) {
+    auto devices = kj::heapArrayBuilder<ContainerPrivileges::Device>(privileges.devices.size() + 1);
+    for (auto& device: privileges.devices) {
+      devices.add(kj::mv(device));
+    }
+    devices.add(ContainerPrivileges::Device{
+      .pathOnHost = kj::str(FUSE_DEVICE_PATH),
+      .pathInContainer = kj::str(FUSE_DEVICE_PATH),
+      .cgroupPermissions = kj::str("rwm"),
+    });
+    privileges.devices = devices.finish();
+  }
+
+  if (!contains(privileges.capabilities, FUSE_CAPABILITY)) {
+    auto capabilities = kj::heapArrayBuilder<kj::String>(privileges.capabilities.size() + 1);
+    for (auto& capability: privileges.capabilities) {
+      capabilities.add(kj::mv(capability));
+    }
+    capabilities.add(kj::str(FUSE_CAPABILITY));
+    privileges.capabilities = capabilities.finish();
+  }
+
+  if (!contains(privileges.securityOpt, FUSE_SECURITY_OPT)) {
+    auto securityOpt = kj::heapArrayBuilder<kj::String>(privileges.securityOpt.size() + 1);
+    for (auto& option: privileges.securityOpt) {
+      securityOpt.add(kj::mv(option));
+    }
+    securityOpt.add(kj::str(FUSE_SECURITY_OPT));
+    privileges.securityOpt = securityOpt.finish();
+  }
+
+  return kj::mv(privileges);
+}
+
 // Represents a parsed egress mapping. IP/CIDR mappings match destination IPs,
 // while hostnameGlob mappings match either HTTP hostnames or TLS SNI depending on protocol.
 // Defined here (not in the header) to avoid pulling kj::OneOf, kj::CidrRange, and
@@ -1020,7 +1086,7 @@ ContainerClient::ContainerClient(capnp::ByteStreamFactory& byteStreamFactory,
       sidecarContainerName(kj::encodeUriComponent(kj::str(containerName, "-proxy"))),
       imageName(kj::mv(imageName)),
       containerEgressInterceptorImage(kj::mv(containerEgressInterceptorImage)),
-      privileges(kj::mv(privileges)),
+      privileges(applyLocalDockerFuseForLocalDev(kj::mv(privileges))),
       waitUntilTasks(waitUntilTasks),
       pendingCleanup(kj::mv(pendingCleanup).fork()),
       cleanupCallback(kj::mv(cleanupCallback)),

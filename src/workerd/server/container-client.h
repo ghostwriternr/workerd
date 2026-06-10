@@ -71,6 +71,13 @@ void configureContainerPrivileges(
     docker_api::Docker::ContainerCreateRequest::HostConfig::Builder hostConfig,
     const ContainerPrivileges& privileges);
 
+// Opt-in local-development escape hatch for running FUSE-backed filesystems in Docker containers
+// managed by workerd. Returns `privileges` unchanged unless WORKERD_LOCAL_DOCKER_ENABLE_FUSE=1 is
+// set in the workerd process environment; in that case the /dev/fuse device, the SYS_ADMIN
+// capability, and an unconfined AppArmor profile are merged in, skipping any that the caller
+// already configured.
+ContainerPrivileges applyLocalDockerFuseForLocalDev(ContainerPrivileges privileges);
+
 // Docker-based implementation that implements the rpc::Container::Server interface
 // so it can be used as a rpc::Container::Client via kj::heap<ContainerClient>().
 // This allows the Container JSG class to use Docker directly without knowing
