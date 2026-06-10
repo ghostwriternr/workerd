@@ -16,6 +16,7 @@
 #include <workerd/util/uuid.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <capnp/compat/json.h>
 #include <capnp/message.h>
@@ -65,6 +66,13 @@ constexpr size_t MAX_TAR_CONTENT_SIZE = 8ull * 1024 * 1024 * 1024;
 
 // Ensures the stale-volume check runs at most once per process.
 std::atomic_bool staleSnapshotVolumeCheckScheduled = false;
+
+constexpr kj::StringPtr LOCAL_DOCKER_FUSE_ENV = "WORKERD_LOCAL_DOCKER_ENABLE_FUSE"_kj;
+
+bool isLocalDockerFuseEnabled() {
+  auto value = getenv(LOCAL_DOCKER_FUSE_ENV.cStr());
+  return value != nullptr && kj::StringPtr(value) == "1";
+}
 
 struct ParsedAddress {
   kj::OneOf<kj::CidrRange, kj::String> destination;
@@ -912,6 +920,25 @@ kj::Maybe<uint16_t> tryParsePublishedHostPort(capnp::json::Value::Reader portMap
 
 }  // namespace
 
+void configureLocalDockerFuseForLocalDev(
+    docker_api::Docker::ContainerCreateRequest::HostConfig::Builder hostConfig) {
+  if (!isLocalDockerFuseEnabled()) {
+    return;
+  }
+
+  auto devices = hostConfig.initDevices(1);
+  auto fuseDevice = devices[0];
+  fuseDevice.setPathOnHost("/dev/fuse");
+  fuseDevice.setPathInContainer("/dev/fuse");
+  fuseDevice.setCgroupPermissions("rwm");
+
+  auto capAdd = hostConfig.initCapAdd(1);
+  capAdd.set(0, "SYS_ADMIN");
+
+  auto securityOpt = hostConfig.initSecurityOpt(1);
+  securityOpt.set(0, "apparmor:unconfined");
+}
+
 // Represents a parsed egress mapping. IP/CIDR mappings match destination IPs,
 // while hostnameGlob mappings match either HTTP hostnames or TLS SNI depending on protocol.
 // Defined here (not in the header) to avoid pulling kj::OneOf, kj::CidrRange, and
@@ -1709,6 +1736,8 @@ kj::Promise<void> ContainerClient::createContainer(kj::StringPtr effectiveImage,
   if (!params.getCompatibilityFlags().getContainersPidNamespace()) {
     hostConfig.setPidMode("host");
   }
+
+  configureLocalDockerFuseForLocalDev(hostConfig);
 
   if (restoreMounts.size() > 0) {
     auto mounts = hostConfig.initMounts(restoreMounts.size());

@@ -48,6 +48,12 @@ kj::Own<capnp::MallocMessageBuilder> decodeJsonResponse(kj::StringPtr response) 
   return message;
 }
 
+// Opt-in local-development escape hatch for running FUSE-backed filesystems in Docker
+// containers managed by workerd. This only mutates HostConfig when
+// WORKERD_LOCAL_DOCKER_ENABLE_FUSE=1 is set in the workerd process environment.
+void configureLocalDockerFuseForLocalDev(
+    docker_api::Docker::ContainerCreateRequest::HostConfig::Builder hostConfig);
+
 // Docker-based implementation that implements the rpc::Container::Server interface
 // so it can be used as a rpc::Container::Client via kj::heap<ContainerClient>().
 // This allows the Container JSG class to use Docker directly without knowing

@@ -15,6 +15,8 @@
 
 #include <kj/test.h>
 
+#include <stdlib.h>
+
 namespace workerd::server {
 namespace {
 
@@ -193,6 +195,59 @@ KJ_TEST("ContainerCreateRequest encodes HostConfig Dns") {
   KJ_REQUIRE(decodedDns.size() == 2);
   KJ_EXPECT(decodedDns[0] == "1.1.1.1");
   KJ_EXPECT(decodedDns[1] == "8.8.8.8");
+}
+
+KJ_TEST("local Docker FUSE config is omitted by default") {
+  unsetenv("WORKERD_LOCAL_DOCKER_ENABLE_FUSE");
+
+  capnp::JsonCodec codec;
+  codec.handleByAnnotation<docker_api::Docker::ContainerCreateRequest>();
+
+  capnp::MallocMessageBuilder message;
+  auto root = message.initRoot<docker_api::Docker::ContainerCreateRequest>();
+  root.setImage("test-image");
+
+  configureLocalDockerFuseForLocalDev(root.initHostConfig());
+
+  auto json = codec.encode(root);
+  auto jsonText = json.asPtr();
+
+  KJ_EXPECT(!jsonText.contains("\"Devices\""));
+  KJ_EXPECT(!jsonText.contains("\"CapAdd\""));
+  KJ_EXPECT(!jsonText.contains("\"SecurityOpt\""));
+}
+
+KJ_TEST("local Docker FUSE config is applied when explicitly enabled") {
+  setenv("WORKERD_LOCAL_DOCKER_ENABLE_FUSE", "1", true);
+  KJ_DEFER(unsetenv("WORKERD_LOCAL_DOCKER_ENABLE_FUSE"));
+
+  capnp::JsonCodec codec;
+  codec.handleByAnnotation<docker_api::Docker::ContainerCreateRequest>();
+
+  capnp::MallocMessageBuilder message;
+  auto root = message.initRoot<docker_api::Docker::ContainerCreateRequest>();
+  root.setImage("test-image");
+
+  configureLocalDockerFuseForLocalDev(root.initHostConfig());
+
+  auto json = codec.encode(root);
+
+  auto decoded = decodeJsonResponse<docker_api::Docker::ContainerCreateRequest>(json.asPtr());
+  auto hostConfig = decoded->getRoot<docker_api::Docker::ContainerCreateRequest>().getHostConfig();
+
+  auto capAdd = hostConfig.getCapAdd();
+  KJ_REQUIRE(capAdd.size() == 1);
+  KJ_EXPECT(capAdd[0] == "SYS_ADMIN");
+
+  auto devices = hostConfig.getDevices();
+  KJ_REQUIRE(devices.size() == 1);
+  KJ_EXPECT(devices[0].getPathOnHost() == "/dev/fuse");
+  KJ_EXPECT(devices[0].getPathInContainer() == "/dev/fuse");
+  KJ_EXPECT(devices[0].getCgroupPermissions() == "rwm");
+
+  auto securityOpt = hostConfig.getSecurityOpt();
+  KJ_REQUIRE(securityOpt.size() == 1);
+  KJ_EXPECT(securityOpt[0] == "apparmor:unconfined");
 }
 
 }  // namespace
